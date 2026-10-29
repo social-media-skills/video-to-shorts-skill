@@ -1,0 +1,48 @@
+name: test
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  render:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ffmpeg
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then sudo apt-get update && sudo apt-get install -y ffmpeg; fi
+          if [ "$RUNNER_OS" = "macOS" ]; then brew install ffmpeg; fi
+          if [ "$RUNNER_OS" = "Windows" ]; then choco install ffmpeg -y --no-progress; fi
+      - run: pip install pillow
+      - name: Check setup
+        run: python skills/video-to-shorts-skill/scripts/check_setup.py
+      - name: Make a test video and transcript
+        run: |
+          ffmpeg -v error -f lavfi -i testsrc2=size=1280x720:rate=30 -f lavfi -i sine=frequency=300 -t 20 -c:v libx264 -pix_fmt yuv420p -c:a aac test.mp4
+          printf '1\n00:00:01,000 --> 00:00:04,000\nThis is a test of the captions.\n\n2\n00:00:05,000 --> 00:00:09,000\nIt should work on every machine.\n' > test.srt
+      - name: Transcribe (existing transcript route)
+        run: python skills/video-to-shorts-skill/scripts/transcribe.py test.mp4 --from test.srt --out work
+      - name: Render clips (crop and fit)
+        run: |
+          printf '{"video":"test.mp4","clips":[{"id":"1","start":0.5,"end":9.5,"hook":"Test hook","reframe":"center"},{"id":"2","start":0.5,"end":9.5,"reframe":"fit"}]}' > clips.json
+          python skills/video-to-shorts-skill/scripts/make_shorts.py clips.json --transcript work/transcript.json --out shorts
+      - name: Verify output
+        run: |
+          python - <<'PY'
+          import json, subprocess
+          m = json.load(open("shorts/manifest.json"))
+          assert len(m["clips"]) == 2
+          for c in m["clips"]:
+              out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                                    "stream=width,height", "-of", "csv=p=0", c["path"]],
+                                   capture_output=True, text=True).stdout.strip()
+              assert out == "1080,1920", out
+          print("ok", [c["seconds"] for c in m["clips"]])
+          PY
