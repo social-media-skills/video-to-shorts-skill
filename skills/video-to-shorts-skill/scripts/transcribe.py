@@ -135,14 +135,25 @@ def via_api(src, engine, tmp):
     return words, f"{engine} ({model})"
 
 
+def pcm16k(path):
+    """The audio as 16 kHz mono float samples, decoded by ffmpeg (what Whisper models take)."""
+    import numpy as np
+    r = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                       capture_output=True)
+    if r.returncode != 0 or not r.stdout:
+        sys.exit(f"could not decode the audio of {path}")
+    return np.frombuffer(r.stdout, dtype=np.float32).copy()
+
+
 def via_local(src, model_size, tmp):
     try:
         from faster_whisper import WhisperModel
     except ImportError:
         sys.exit("Local transcription needs faster-whisper: pip install faster-whisper\n"
                  "Or set GROQ_API_KEY / OPENAI_API_KEY, or pass an existing transcript with --from.")
-    audio = os.path.join(tmp, "audio.mp3")
-    extract_audio(src, audio, bitrate="64k")
+    mp3 = os.path.join(tmp, "audio.mp3")
+    extract_audio(src, mp3, bitrate="64k")
+    audio = pcm16k(mp3)  # decoded by ffmpeg, so faster-whisper's own decoder (PyAV) is never needed
     print(f"  transcribing locally with faster-whisper '{model_size}' (first run downloads the model)...",
           flush=True)
     model = WhisperModel(model_size, device="cpu", compute_type="int8")
